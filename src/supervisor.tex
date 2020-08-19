@@ -1704,8 +1704,7 @@ size.
 \begin{commentary}
   The motivation for a NAPOT PTE is that it can be cached in a TLB as a single
   entry representing the contiguous region as if it were a single (large) page.
-  This allows a region to be covered with one PTE instead of multiple, which in
-  turn can help relieve TLB pressure in some scenarios.  The NAPOT encoding is
+  This can help relieve TLB pressure in some scenarios.  The NAPOT encoding is
   designed to fit within the pre-existing Sv39 and Sv48 address translation
   algorithms so as not to disrupt existing implementations or designs that
   choose not to implement the scheme.
@@ -1788,12 +1787,20 @@ access-fault exception corresponding to the original access type.
   \label{sv39napotwalk}
 \end{figure}
 
-Figure~\ref{sv39napotwalk} shows an example page table walk for an Sv39 NAPOT
-translation process.  The last level of the page table walk uses a 64KiB
-NAPOT PTE rather than the PTE indexed by $vpn[0]$.  The physical address
-ultimately generated therefore pulls the high-order bits of $ppn[0]$ from the
-$ppn[0]$ field of the PTE itself and the low-order bits of $ppn[0]$ from
-$vpn[0]$.
+\begin{commentary}
+  Figure~\ref{sv39napotwalk} shows how the NAPOT-aware translation algorithm
+  represents an address translation request hitting on a previously-fetched
+  NAPOT TLB entry, while avoiding referring directly to TLBs, which are
+  microarchitectural rather than architectural state.  This scenario is
+  represented by architecturally permitting the last level of the page table
+  walk to directly access the page table entry corresponding to the original
+  source of the NAPOT TLB entry (i.e., at offset $aj$), rather than accessing
+  the PTE indexed by $vpn[0]$.
+
+  In most real implementations, the page table walk itself will continue to
+  follow the algorithm in Section~\ref{sv32algorithm} rather than choosing $j$
+  arbitrarily during the walk.
+\end{commentary}
 
 \begin{commentary}
   Just as with normal PTEs, TLBs are permitted to cache NAPOT PTEs whose V
