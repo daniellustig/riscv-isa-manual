@@ -1605,7 +1605,7 @@ quickly distinguish user and supervisor address regions.
 \instbit{1} &
 \instbit{0} \\
 \hline
-\multicolumn{1}{|c|}{\it Reserved} &
+\multicolumn{1}{|c|}{\it attributes} &
 \multicolumn{1}{c|}{PPN[2]} &
 \multicolumn{1}{c|}{PPN[1]} &
 \multicolumn{1}{c|}{PPN[0]} &
@@ -1634,8 +1634,21 @@ always be aligned to a page boundary.  The physical page number of the
 root page table is stored in the {\tt satp} register's PPN field.
 
 The PTE format for Sv39 is shown in Figure~\ref{sv39pte}.  Bits 9--0
-have the same meaning as for Sv32.  Bits 63--54 are reserved
-for future standard use and must be zeroed by software for forward compatibility.
+have the same meaning as for Sv32.
+
+Bit 63 indicates that the PTE uses a custom implementation-specific encoding.
+If bit 63 is set, the algorithm for virtual-to-physical address translation
+is implementation-defined.  If bit 63 is not set,
+the algorithm for virtual-to-physical address translation is described in
+Section~\ref{napotpages}.
+
+Bits 62--60 indicate cacheability attributes associated with the virtual
+address in question, as described in Section~\ref{virtualattributes}.
+
+Bit 59 indicates the use of naturally aligned power-of-two (NAPOT)
+address translation contiguity, as described in Section~\ref{napotpages}.
+
+Bits 58--54 are reserved for future use.
 
 \begin{commentary}
 We reserved several PTE bits for a possible extension that improves
@@ -1658,6 +1671,108 @@ aligned.
 The algorithm for virtual-to-physical address translation is the same as in
 Section~\ref{sv32algorithm}, except VALEN equals 39, LEVELS equals 3, and
 PTESIZE equals 8.
+
+\subsection{Virtual Address Attributes}
+\label{virtualattributes}
+
+\begin{commentary}\color{red}
+  Placeholder; to be filled in later
+\end{commentary}
+
+\subsection{Naturally Aligned Power-of-Two Translation Contiguity}
+\label{napotpages}
+
+Bit 59 indicates that a PTE represents a translation that is part of a range of
+contiguous virtual-to-physical translations with the same permissions at some
+naturally aligned power-of-2 (NAPOT) granularity larger than the base page
+size.
+
+\begin{commentary}
+  The motivation for a NAPOT PTE is that it can be cached in a TLB as a single
+  entry representing the contiguous region as if it were a single (large) page.
+  This can help relieve TLB pressure in some scenarios.  The NAPOT encoding is
+  designed to fit within the pre-existing Sv39 and Sv48 address translation
+  algorithms so as not to disrupt existing implementations or designs that
+  choose not to implement the scheme.
+\end{commentary}
+
+The list of currently supported NAPOT PTE encodings is shown in
+Table~\ref{ptenapot}.  Currently, NAPOT encodings are only supported for 4KiB
+leaf PTEs.  Depending on need, the NAPOT scheme may be extended to other
+intermediate page sizes and/or to other levels of the page table in the future.
+
+\begin{table*}[h!]
+\begin{center}
+\begin{tabular}{|c|c||c|l|}
+\multicolumn{4}{c}{Option 1: NANAPOT: an encoding that more naturally extends} \\
+\multicolumn{4}{c}{to other intermediate NAPOT sizes} \\
+\hline
+Bit 59 & $pte.ppn[i]$      & $pte.napot\_bits$ & Meaning if $i=0$         \\
+\hline
+0      & {\tt y~yyyy~yyyy} & 0                 &  Non-NAPOT PTE           \\
+1      & {\tt y~yyyy~yy1z} & 2                 &  16KB contiguous region \textcolor{red}{(tentative)} \\
+1      & {\tt y~yyyy~1z0z} & 4                 &  64KB contiguous region  \\
+1      & {\tt y~yy1z~0z0z} & 6                 &  256KB contiguous region \textcolor{red}{(tentative)} \\
+\hline
+\multicolumn{4}{c}{} \\
+\multicolumn{4}{c}{Option 2: an encoding that uses zeros for 64KB pages, allowing} \\
+\multicolumn{4}{c}{for more flexibility for future non-NAPOT uses of the `{\tt z}' bits} \\
+\hline
+Bit 59 & $pte.ppn[i]$      & $pte.napot\_bits$ & Meaning if $i=0$         \\
+\hline
+0      & {\tt y~yyyy~yyyy} & 0                 &  Non-NAPOT PTE           \\
+1      & {\tt y~yyyy~yy1z} & 2                 &  16KB contiguous region \textcolor{red}{(tentative)} \\
+1      & {\tt y~yyyy~z00z} & 4                 &  64KB contiguous region  \\
+1      & {\tt y~yyzz~z10z} & 6                 &  256KB contiguous region \textcolor{red}{(tentative)} \\
+\hline
+\multicolumn{4}{l}{{\tt y}: subset of PPN used for address translation} \\
+\multicolumn{4}{l}{{\tt z}: reserved for future use; must be set to zero} \\
+\end{tabular}
+\end{center}
+\caption{NAPOT Contiguous Translation Encodings}
+\label{ptenapot}
+\end{table*}
+
+\begin{commentary}\color{red}
+  TODO: choose an option in Table~\ref{ptenapot}.
+\end{commentary}
+
+NAPOT PTEs follow the same address translation algorithm in
+Section~\ref{sv32algorithm}, except that the following step is added to the end
+of the algorithm:
+\begin{itemize}
+    \item Create address-translation cache entries mapping
+      $a + va.vpn[j] \times \textrm{PTESIZE}$ to $pte$ for the address space
+      identified in ${\tt satp}.ASID$, for all $j$ such that
+      $j[9:napot\_bits]=i[9:napot\_bits]$.
+\end{itemize}
+
+\begin{commentary}
+  This added step represents the creation of a single TLB entry covering the
+  entire NAPOT region.
+\end{commentary}
+
+\begin{commentary}
+  Just as with normal PTEs, TLBs are permitted to cache NAPOT PTEs whose V
+  (Valid) bit is clear.
+
+  If an implementation chooses to use a NAPOT PTE (or cached version thereof),
+  it may not consult the PTE specified by the algorithm in
+  Section~\ref{sv32algorithm} at all.  The operating system must query all
+  NAPOT aliases of a page to determine whether that page has been accessed
+  and/or is dirty.  If the OS manually sets the A and/or D bits for a page,
+  it is recommended that the OS also set the A and/or D bits for all NAPOT
+  aliases as well in order to avoid unnecessary traps.
+
+  It is also the responsibility of the OS and/or hypervisor to configure the
+  page table in a way that there are no inconsistencies between NAPOT PTEs and
+  non-NAPOT PTEs.  If an update needs to be made, the OS generally should first
+  mark all of the PTEs invalid, then issue an SFENCE.VMA, then update the
+  PTE(s), as described in Section~\ref{sec:sfence.vma}.  If there are any
+  inconsistencies, then the effect is the same as when SFENCE.VMA is used
+  incorrectly: one of the translations will be chosen, but the choice is
+  unpredictable.
+\end{commentary}
 
 \section{Sv48: Page-Based 48-bit Virtual-Memory System}
 \label{sec:sv48}
@@ -1757,7 +1872,7 @@ is untranslated.
 \instbit{1} &
 \instbit{0} \\
 \hline
-\multicolumn{1}{|c|}{\it Reserved} &
+\multicolumn{1}{|c|}{\it attributes} &
 \multicolumn{1}{c|}{PPN[3]} &
 \multicolumn{1}{c|}{PPN[2]} &
 \multicolumn{1}{c|}{PPN[1]} &
@@ -1781,7 +1896,7 @@ is untranslated.
 \label{sv48pte}
 \end{figure*}
 
-The PTE format for Sv48 is shown in Figure~\ref{sv48pte}.  Bits 9--0
+The PTE format for Sv48 is shown in Figure~\ref{sv48pte}.  Bits 63--54 and 9--0
 have the same meaning as for Sv32.  Any level of PTE may be a leaf
 PTE, so in addition to \wunits{4}{KiB} pages, Sv48 supports
 \wunits{2}{MiB} {\em megapages}, \wunits{1}{GiB} {\em gigapages}, and
