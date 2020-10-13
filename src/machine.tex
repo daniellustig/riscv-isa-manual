@@ -98,6 +98,8 @@ where the implementation allows the supported ISA to be modified.  At
 reset, the Extensions field shall contain the maximal set of supported
 extensions, and I shall be selected over E if both are available.
 
+When a standard extension is disabled by clearing its bit in {\tt misa}, the instructions and CSRs defined or modified by the extension revert to their defined or reserved behaviors as if the extension is not implemented.
+
 The RV128I base ISA is not yet frozen, and while much of the remainder of this
 specification is expected to apply to RV128, this version of the document
 focuses only on RV32 and RV64.
@@ -180,6 +182,10 @@ extension.
 If an instruction that would write {\tt misa} increases IALIGN, and
 the subsequent instruction's address is not IALIGN-bit aligned, the
 write to {\tt misa} is suppressed, leaving {\tt misa} unchanged.
+
+When software enables an extension that was previously disabled, then all
+state uniquely associated with that extension is \unspecified, unless
+otherwise specified by that extension.
 
 \subsection{Machine Vendor ID Register {\tt mvendorid}}
 
@@ -709,11 +715,9 @@ Note that, while SUM is ordinarily ignored when not executing in S-mode, it
 {\em is} in effect when MPRV=1 and MPP=S.  SUM is hardwired to 0 if S-mode is
 not supported.
 
-\begin{commentary}
 The MXR and SUM mechanisms only affect the interpretation of permissions
 encoded in page-table entries.  In particular, they have no impact on whether
 access-fault exceptions are raised due to PMAs or PMP.
-\end{commentary}
 
 \subsubsection{Endianness Control in {\tt mstatus} and {\tt mstatush} Registers}
 
@@ -2052,7 +2056,7 @@ explicitly written by software.
 
 The Interrupt bit in the {\tt mcause} register is set if the
 trap was caused by an interrupt. The Exception Code field
- contains a code identifying the last exception.  Table~\ref{mcauses}
+ contains a code identifying the last exception or interrupt.  Table~\ref{mcauses}
 lists the possible machine-level exception codes.  The Exception Code
 is a \wlrl\ field, so is only guaranteed to hold supported exception
 codes.
