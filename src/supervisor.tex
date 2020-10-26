@@ -1395,8 +1395,9 @@ Two schemes to manage the A and D bits are permitted:
       written and the D bit is clear, the implementation sets the
       corresponding bit(s) in the PTE.  The PTE update must be atomic with
       respect to other accesses to the PTE, and must atomically check
-      that the PTE is valid and grants sufficient permissions.  The
-      PTE update must be exact (i.e., not speculative), and observed
+      that the PTE is valid and grants sufficient permissions.  Updates
+      of the A bit may be performed as a result of speculation, but updates
+      to the D bit must be exact (i.e., not speculative), and observed
       in program order by the local hart.  Furthermore, the PTE update
       must appear in the global memory order no later than the explicit
       memory access, or any subsequent explicit memory access to that
@@ -1413,9 +1414,21 @@ Two schemes to manage the A and D bits are permitted:
 All harts in a system must employ the same PTE-update scheme as each other.
 
 \begin{commentary}
-Mandating that the PTE updates to be exact, atomic, and in program order
-simplifies the specification, and makes the feature more useful for system
-software.  Simple implementations may instead generate page-fault exceptions.
+Prior versions of this specification required PTE A bit updates to be exact,
+but allowing the A bit to be updated as a result of speculation simplifies
+the implementation of address translation prefetchers.  System software
+typically uses the A bit as a page replacement policy hint, but does not
+require exactness for functional correctness.  On the other hand, D bit updates
+are still required to be exact and performed in program order, as the D bit
+affects the functional correctness of page eviction.
+
+Implementations are of course still permitted to perform both A and D bit
+updates only in an exact manner.
+
+In both cases, requiring atomicity ensures that the PTE update will not be
+interrupted by other S-mode writes to the page table, as such interruptions
+could lead to A/D bits being set on PTEs that are no longer valid.  Simple
+implementations may instead generate page-fault exceptions.
   
 The A and D bits are never cleared by the implementation.  If the
 supervisor software does not rely on accessed and/or dirty bits,
@@ -1454,11 +1467,14 @@ follows:
     \item Let $pte$ take the value of any address-translation cache entry for
       address $b$ such that either the address space identifier of the entry
       matches the address space identified by $\text{\em satp}.ASID$, or $pte.g=1$.
-    \item Let $pte$ be the value of the PTE at address $b$, accessed with S-mode
-      permissions.  If accessing $pte$ violates a PMA or PMP check, raise an
-      access-fault exception corresponding to the original access type.
-      Otherwise, create an address-translation cache entry mapping $b$ to the
-      value $pte$ for the address space identified in $\text{\em satp}.ASID$.
+    \item Let $pte$ be the value of the PTE at address $b$.  If accessing $pte$
+        violates a PMA or PMP check, raise an access-fault exception
+        corresponding to the original access type.  Otherwise, create an
+        address-translation cache entry mapping $b$ to the value $pte$ for
+        the address space identified in $\text{\em satp}.ASID$.  The load of
+        PTE and the creation of the address-translation cache entry must be
+        atomic; in particular, no intervening SFENCE may be perceived to have
+        occurred in between.
   \end{itemize}
   (For Sv32, PTESIZE=4.)
 
@@ -1481,19 +1497,20 @@ follows:
 \item If $i>0$ and $pte.ppn[i-1:0]\neq 0$, this is a misaligned superpage;
   stop and raise a page-fault exception corresponding to the original access type.
 
-\item If $pte.a=0$, or if the memory access is a store and $pte.d=0$, either
+\item If $pte.a=0$, or if the original memory access is a store and $pte.d=0$, either
   raise a page-fault exception corresponding to the original access type, or:
   \begin{itemize}
-  \item If an S-mode store to $pte$ would violate a PMA or PMP check, raise an
+  \item If $pte$ was loaded from the address-translation cache in step 2, go
+    back to step 2 and load $pte$ from address $b$ instead.
+  \item If a store to $pte$ would violate a PMA or PMP check, raise an
     access-fault exception corresponding to the original access type.
-  \item Set $pte.a$ to 1 and, if the memory access is a store, also set
+  \item Set $pte.a$ to 1 and, if the original memory access is a store, also set
     $pte.d$ to 1.  Create a new address-translation cache entry mapping $b$ to
     the value $pte$ for the address space identified in $\text{\em satp}.ASID$.
-  \item This update and the loading of $pte$ in step 2 must be atomic; in
-    particular, no intervening store to the PTE may be perceived to have
-    occurred in-between.  $pte$ must also have been loaded from address $b$ in
-    the first place; A and/or D bit updates may not be performed directly on
-    address-translation cache entries.
+  \item This update, the loading of $pte$ in step 2, and the creation of the
+    address-translation cache entry must be atomic; in particular, neither an
+    intervening store to the PTE nor an SFENCE may be perceived to have
+    occurred in-between.
   \end{itemize}
 
 \item The translation is successful. The translated physical address is
@@ -1508,12 +1525,13 @@ follows:
 
 \begin{commentary}
   The translation algorithm explicitly permits an arbitrary number of
-  translations to proceed to step 3 and then pause for some arbitrary amount of
-  time before continuing.  This has two notable implications: 1) at any time,
-  the entire page table (i.e., all entries reachable by executing the algorithm)
-  may be loaded into the address-translation cache, and 2) switching {\tt satp}
-  does not terminate in-flight translations.  An implementation's page table
-  walker may proceed with any {\tt satp} value that was previously valid.
+  translations to begin and then pause at any point for some arbitrary amount
+  of time before continuing.  This has two notable implications: 1) at any
+  time, the entire page table (i.e., all entries reachable by executing the
+  algorithm) may be loaded into the address-translation cache, and 2) switching
+  {\tt satp} does not terminate in-flight translations.  An implementation's
+  page table walker may proceed with any {\tt satp} value that was previously
+  valid.
 \end{commentary}
 
 \section{Sv39: Page-Based 39-bit Virtual-Memory System}
@@ -1659,10 +1677,10 @@ Section~\ref{napotpages}.
 Bit 62 indicates the use of naturally aligned power-of-two (NAPOT)
 address translation contiguity, as described in Section~\ref{napotpages}.
 
-Bits 61--xx indicate cacheability attributes associated with the virtual
+Bits 61--\textcolor{red}{xx} indicate cacheability attributes associated with the virtual
 address in question, as described in Section~\ref{virtualattributes}.
 
-Bits xx--54 are reserved for future use.
+Bits \textcolor{red}{xx}--54 are reserved for future use.
 
 \begin{commentary}
 We reserved several PTE bits for a possible extension that improves
@@ -1714,35 +1732,31 @@ size.
   which PTE(s) will be used, but the behavior is otherwise well defined.
 \end{commentary}
 
-The list of currently supported NAPOT PTE encodings is shown in
-Table~\ref{ptenapot}.  Currently, NAPOT encodings are only supported for 4KiB
-leaf PTEs.  Depending on need, the NAPOT scheme may be extended to other
-intermediate page sizes and/or to other levels of the page table in the future.
-
 \begin{table*}[h!]
 \begin{center}
 \begin{tabular}{|c|c||c|l|}
-\multicolumn{4}{c}{Option 1: NANAPOT: an encoding that more naturally extends} \\
-\multicolumn{4}{c}{to other intermediate NAPOT sizes} \\
+%\multicolumn{4}{c}{Option 1: NANAPOT: an encoding that more naturally extends} \\
+%\multicolumn{4}{c}{to other intermediate NAPOT sizes} \\
 \hline
 Bit 59 & $pte.ppn[i]$      & $pte.napot\_bits$ & Meaning if $i=0$         \\
 \hline
 0      & {\tt y~yyyy~yyyy} & 0                 &  Non-NAPOT PTE           \\
-1      & {\tt y~yyyy~yy1z} & 2                 &  16KB contiguous region \textcolor{red}{(tentative)} \\
-1      & {\tt y~yyyy~1z0z} & 4                 &  64KB contiguous region  \\
-1      & {\tt y~yy1z~0z0z} & 6                 &  256KB contiguous region \textcolor{red}{(tentative)} \\
+1      & {\tt y~yyyy~1zzz} & 4                 &  64KB contiguous region  \\
+%1      & {\tt y~yyyy~yy1z} & 2                 &  16KB contiguous region \textcolor{red}{(tentative)} \\
+%1      & {\tt y~yyyy~1z0z} & 4                 &  64KB contiguous region  \\
+%1      & {\tt y~yy1z~0z0z} & 6                 &  256KB contiguous region \textcolor{red}{(tentative)} \\
 \hline
-\multicolumn{4}{c}{} \\
-\multicolumn{4}{c}{Option 2: an encoding that uses zeros for 64KB pages, allowing} \\
-\multicolumn{4}{c}{for more flexibility for future non-NAPOT uses of the `{\tt z}' bits} \\
-\hline
-Bit 59 & $pte.ppn[i]$      & $pte.napot\_bits$ & Meaning if $i=0$         \\
-\hline
-0      & {\tt y~yyyy~yyyy} & 0                 &  Non-NAPOT PTE           \\
-1      & {\tt y~yyyy~yy1z} & 2                 &  16KB contiguous region \textcolor{red}{(tentative)} \\
-1      & {\tt y~yyyy~z00z} & 4                 &  64KB contiguous region  \\
-1      & {\tt y~yyzz~z10z} & 6                 &  256KB contiguous region \textcolor{red}{(tentative)} \\
-\hline
+%\multicolumn{4}{c}{} \\
+%\multicolumn{4}{c}{Option 2: an encoding that uses zeros for 64KB pages, allowing} \\
+%\multicolumn{4}{c}{for more flexibility for future non-NAPOT uses of the `{\tt z}' bits} \\
+%\hline
+%Bit 59 & $pte.ppn[i]$      & $pte.napot\_bits$ & Meaning if $i=0$         \\
+%\hline
+%0      & {\tt y~yyyy~yyyy} & 0                 &  Non-NAPOT PTE           \\
+%1      & {\tt y~yyyy~yy1z} & 2                 &  16KB contiguous region \textcolor{red}{(tentative)} \\
+%1      & {\tt y~yyyy~z00z} & 4                 &  64KB contiguous region  \\
+%1      & {\tt y~yyzz~z10z} & 6                 &  256KB contiguous region \textcolor{red}{(tentative)} \\
+%\hline
 \multicolumn{4}{l}{{\tt y}: subset of PPN used for address translation} \\
 \multicolumn{4}{l}{{\tt z}: reserved for future use; must be set to zero} \\
 \end{tabular}
@@ -1751,9 +1765,20 @@ Bit 59 & $pte.ppn[i]$      & $pte.napot\_bits$ & Meaning if $i=0$         \\
 \label{ptenapot}
 \end{table*}
 
-\begin{commentary}\color{red}
-  TODO: choose an option in Table~\ref{ptenapot}.
+The list of currently supported NAPOT PTE encodings is shown in
+Table~\ref{ptenapot}.  Currently, NAPOT encodings are only supported for 4KiB
+leaf PTEs.
+
+\begin{commentary}
+  Depending on need, the NAPOT scheme may be extended to other intermediate
+  page sizes and/or to other levels of the page table in the future.  The
+  encoding is designed to accommodate other NAPOT sizes should that need
+  arise.
 \end{commentary}
+
+%\begin{commentary}\color{red}
+%  TODO: choose an option in Table~\ref{ptenapot}.
+%\end{commentary}
 
 NAPOT PTEs follow the same address translation algorithm in
 Section~\ref{sv32algorithm}, except that the following step is added to the end
@@ -1762,7 +1787,10 @@ of the algorithm:
     \item Create address-translation cache entries mapping
       $a + va.vpn[j] \times \textrm{PTESIZE}$ to $pte$ for the address space
       identified in ${\tt satp}.ASID$, for all $j$ such that
-      $j[9:napot\_bits]=i[9:napot\_bits]$.
+      $j[9:napot\_bits]=i[9:napot\_bits]$.  The creation of these entries, the
+      loading of $pte$ in step 2, and (if applicable) the update of the PTE's
+      A and D bits must be atomic; in particular, no SFENCE may be perceived to
+      have occurred in between.
 \end{itemize}
 
 \begin{commentary}
@@ -1772,7 +1800,7 @@ of the algorithm:
   the NAPOT region into TLB entries covering any smaller power-of-two region
   sizes.  For example, a 64KiB NAPOT PTE might trigger the creation of 16
   standard 4KiB TLB entries, all with contents generated from the NAPOT PTE
-  (even if the PTEs for the other 4KiB regions differ).
+  (even if the PTEs for the other 4KiB regions have different contents).
 \end{commentary}
 
 \begin{commentary}
@@ -1784,8 +1812,8 @@ of the algorithm:
   Section~\ref{sv32algorithm} at all.  The operating system must query all
   NAPOT aliases of a page to determine whether that page has been accessed
   and/or is dirty.  If the OS manually sets the A and/or D bits for a page,
-  it is recommended that the OS also set the A and/or D bits for all NAPOT
-  aliases as well in order to avoid unnecessary traps.
+  it is recommended that the OS also set the A and/or D bits for other NAPOT
+  aliases as appropriate in order to avoid unnecessary traps.
 
   It is also the responsibility of the OS and/or hypervisor to configure the
   page table in a way that there are no inconsistencies between NAPOT PTEs and
@@ -1806,6 +1834,32 @@ of the algorithm:
   If anybody has more tests or examples to add here, please let me know and/or
   create a PR.
 \end{commentary}
+
+\paragraph{SFENCE Terminating In-Progress Translations}
+\begin{figure}[h!]
+\begin{center}
+\begin{verbatim}
+  # Implicitly start a translation.  Get as far as loading satp atomically, then pause.
+  csrw satp, <same ASID and MODE, different PPN>
+  sfence.vma
+  # Prior translation continues, using the old value of PPN?
+\end{verbatim}
+\end{center}
+\caption{Sample code showing that SFENCE must terminate in-progress translations}
+\label{pte_sfence}
+\end{figure}
+
+Figure~\ref{pte_sfence} shows that SFENCE instructions with
+{\em rs1}=0 must terminate in-progress translations.  Otherwise, any
+translations that had proceeded only as far as reading {\tt satp} might
+continue to use the old value of {\tt satp}.PPN, which is no longer valid and
+might even now hold some unrelated data.  The same reasoning also applies at
+subsequent levels of the page table.
+
+SFENCE instructions with {\em rs1}$\neq$0 do not need to terminate in-progress
+translations because the access of the leaf PTE or address-translation cache
+entry and the potential creation of a new address-translation cache entry are
+required to be atomic with respect to any SFENCE instructions.
 
 \paragraph{Changing Modes During a Translation}
 \begin{figure}[h!]
@@ -1835,6 +1889,31 @@ has not changed, but it is consistent with a translation process that started
 while {\tt satp} was valid and continued even after {\tt satp} was switched.
 
 \paragraph{A/D Bit Updates}
+\begin{figure}[h!]
+\begin{center}
+\begin{verbatim}
+  # a0 holds the memory address of a PTE with D=0
+  <The OS acquires the appropriate lock(s) for the PTE in a0>
+  <The HW page table walker loads a0 as part of step 2 in some page table walk>
+  <The OS performs an atomic swap to a0, reading that D=0, and writing a PTE with V=0>
+  <The HW page table walker sets D=1 to the no-longer-valid PTE>
+  <The OS swaps the page out without writing it back, since it thinks D=0>
+\end{verbatim}
+\end{center}
+\caption{A/D bit updates happening concurrently with OS PTE updates}
+\label{nonatomic_pte_ad}
+\end{figure}
+
+Figure~\ref{nonatomic_pte_ad} shows the consequence of allowing steps 2-7 in
+the translation algorithm to be performed non-atomically.  If the OS updates
+a page that is also concurrently being updated by a hardware page table walker,
+and steps 2-7 are performed non-atomically, then it is possible the walker will
+write D=1 to a PTE that is no longer valid.  This could lead to the OS not
+realizing the page was written, which in turn could lead to data loss if the
+page is evicted from memory.  It could also clobber data written by the OS
+to the A/D bit positions in the invalid PTE's memory.  The atomicity
+requirement ensures that such situations will be avoided.
+
 \begin{figure}[h!]
 \begin{center}
 \begin{verbatim}
